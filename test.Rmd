@@ -19,3 +19,5 @@ Trying again, does it save?
 Within the desktop, I just right clicked and said open in R studio. It did open, in Project: (None). 
 Then I saved it. Did it update?
 >>>>>>> Stashed changes
+
+At 5:46, i opened this rmd file from the actual windows folder, wrote this sentence and saved it. 
