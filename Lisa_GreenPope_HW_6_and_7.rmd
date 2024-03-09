@@ -1,0 +1,648 @@
+---
+title: "IST 707: Homework 6 & 7"
+subtitle: "Digits analysis"
+author: "Lisa GreenPope"
+date: "March 8, 2024"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+    number_sections: true
+    theme: readable
+    df_print: paged
+---
+
+# Introduction
+
+As technology has advanced over the ages, one thing that drives innovation is the quest to automate manual processes that have been tedious and time consuming. For example, washing machines and clothes dryers have replaced washboards and clothes lines, and made the process of cleaning and drying clothes much faster and less labor intensive than it was 100 years ago. Another time consuming task that has been helped by automation is the sorting of mail. Historically, postal employees would need to look at each letter or package that was being mailed to identify where it was being sent, and sort it to go to the correct address.
+
+Feature detection in OCR (Optical Character Recognition) recognizes the distinct shapes that make up each letter or number as a way of identifying text and reading a document, such as a piece of mail. The features of each character would have had to have been programmed in advance, and then OCR could be used to sort mail much faster than a human could. Handwriting that was difficult to read would need to still be read by a human to attempt to decipher what it said.
+
+With the advancement of machine learning algorithms, there is now a process known as ICR (Intelligent Charater Recognition) that uses supervised learning to train an algorithm how to recognize characters based on real world handwriting samples, rather than human-programmed feature recognition. One important database that has helped with that process is the MNIST dataset, which has 60,000 labeled examples of handwritten numbers from 0 to 9, and 10,000 unlabeled handwritten numbers which can be used as a testing dataset. Each number is a grayscale image sized 28x28 pixels, for a total of 784 pixels per image. Each pixel has a value of 0 to 255 indicating how light or dark that pixel is filled in.
+
+Machine learning algorithms can look for patterns in training samples such as these to predict what number is appearing in an unknown sample. Several different supervised algorithms could be useful in this endeavor, including Decision Trees, Naive Bayes, Support Vector Machines, k Nearest Neighbors, and Random Forest. Each of these algorithms will be explored in this study, to identify a variety of options that would be available for developing an intelligent character recognition system.
+
+<https://hackaday.com/2023/09/20/youve-got-mail-reading-addresses-with-ocr/>
+
+<https://www.accusoft.com/resources/blog/ocr-vs-icr-whats-the-difference/>
+
+# Analysis and Models
+
+## About the Data
+
+The first step in any data science endeavor using the R programming language is to load the packages that may be useful in the analysis. A variety of data cleaning, machine learning and visualization packages will be used.
+
+```{r Libraries, message=FALSE, warning=FALSE}
+#Load all packages
+start_time <- Sys.time() #adding this just to track how long this takes
+
+library(tidyverse, quietly = TRUE) #for data cleaning and preparation
+library(rpart, quietly = TRUE) #helps with decision trees 
+library(rpart.plot, quietly = TRUE) #decision tree visuals
+library(rattle, quietly = TRUE)
+library(caret, quietly = TRUE) #variable importance in decision trees
+library(janitor, quietly = TRUE) #to remove constants in a sparse matrix 
+library(e1071, quietly = TRUE) #for svm & naive bayes
+library(naivebayes, quietly = TRUE)
+library(randomForest, quietly = TRUE)
+library(ggfortify, quietly = TRUE) #to create principal components analysis plots
+library(viridis, quietly = TRUE) #for color scales
+library(class, quietly = TRUE) #for knn
+```
+
+Next, the data for this study will be loaded. In this study, what was originally considered the training set will be used for both testing and training, as it provides labeled data that can be assessed. It will be split into two groups, a dataset with 70% of the observations which will be used for training, and then a complementary dataset with the remaining 30% of observations to be used as labeled testing data, which can provide an accuracy measure.
+
+```{r LoadData}
+#Load the smaller set of training data
+training_full <- read_csv("Kaggle-digit-train-sample-small-1400.csv", show_col_types = FALSE)
+
+#Load the larger set of training data
+#training_full <- read_csv("Kaggle-digit-train.csv", show_col_types = FALSE)
+
+#convert the label variable to a factor 
+training_full$label <- as.factor(training_full$label)
+
+#view the data
+head(training_full[,1:5])
+
+#verify that all values within the data set (other than the label variable) are numeric values between 0 and 255. Expect to see 255.  
+max(training_full[,2:785])
+#Expect to see 0 
+min(training_full[,2:785])
+
+#identify if there are any missing values in the data set. Expect to see 0.  
+sum(is.na(training_full))
+
+#split the labeled training data into training and testing (excluding the provided testing data because it's unlabeled)
+set.seed(92)
+df_training <- sample_frac(training_full, .7)
+suppressMessages(df_testing <- anti_join(training_full, df_training))
+
+#check the dimensions of the original dataframe, and the two subsets  
+dim(training_full)
+
+#Training data set dimensions- observations should be lower, attributes should match above
+dim(df_training)
+
+#Testing data set dimensions- observations should be lower, attributes should match above
+dim(df_testing)
+```
+
+The image below shows a sampling of the digits included in the dataset. Around each hand-written digit, one can see that there is quite a bit of white space in the margins.
+
+![](images/mnist_sample_digits.png){width="541"}
+
+<https://ludwig.ai/latest/examples/mnist/>
+
+Each box is made up of 784 numbered pixels, beginning with pixel 0. The image below approximates what the grid looks like, with pixel 0 being in the uppermost left corner, and pixel 378 being close to the center. Each observation (digit) in this dataset has a value for each pixel ranging from 0 (white) to 255 (black).
+
+![](images/paste-534C2FB4.png){width="500" height="453"}
+
+### Exploratory Data Analysis
+
+The first item to assess is if there are any digits that appear much more or less than others in this dataset. Variations in the relative sample size for each digit could impact the analysis if there are not enough examples for the algorithm to learn from.
+
+```{r DigitFrequency}
+#Check the frequency of each digit. Expect to see fairly uniform distribution. 
+ggplot(data = training_full) +
+  geom_bar(mapping = aes(x = label)) + 
+  labs(title = "Frequency of each digit", x = "Digit", y = "Count")
+```
+
+The graph above indicates that the digits are fairly evenly distributed, there is no digit that appears under or over represented in this dataset. The next analysis will be to look at the distribution of pixel shading values. Each digit is comprised of 784 pixels, and each pixel should have a value between 0 and 255. A value of 0 means the pixel is white, a value of 255 means the pixel is black, and any number between those two is a different shade of grey. It will be important to know if there are any missing values in this dataset, or any outliers (for example, negative numbers or numbers over 255) that may suggest an encoding error.
+
+```{r PixelShading}
+#create a vector of all the pixel values in the entire dataframe
+vectorlist <-unlist(training_full[,2:785], use.names = FALSE)
+
+#identify the number of distinct pixels in the dataframe
+length(vectorlist)
+
+#view the distribution of values
+histogram(vectorlist, main = "Frequency of each pixel value (0 to 255)")
+
+#remove all the 0's for another visualization 
+nonzerovector <- if(length(which(vectorlist==0)!=0)) vectorlist[-which(vectorlist==0)]
+
+#view the distribution of pixel shading values, not including 0
+histogram(nonzerovector, main = "Frequency of each pixel value (excluding 0)")
+
+#Add together the values of all instances of a specific pixel to see if there are certain pixels that are always 0 
+pixeltotals <- colSums(training_full[,2:785])
+
+#number of pixels that are always 0 in all samples (out of 784 pixels)
+sum(pixeltotals == 0)
+
+```
+
+This analysis above shows that there are no missing data points, and as expected, all fall within the 0 to 255 range. It is also apparent that this is a very "sparse matrix," meaning that a large portion of the data points are 0, and only a very small percent have a non-zero value. The zeroes are meaningful, indicating white space, but the sheer number of zeroes may slow down processing, without adding identification value.
+
+### Principal Components Analysis
+
+Principal Components Analysis is one method of reducing dimensionality in a large dataset such as this. Because there are so many identical values (zeroes), they may not contribute much to the algorithms. There may be certain pixels that contribute more. Principal Components Analysis will consider all of the pixels, and create new variables that take into account the most important components of all the variables combined. The number of components will match the number of variables, but not all components need to be used. The top few components may be enough to accurately identify the digits.
+
+To make this work, pre-processing steps included ignoring the label column by subsetting it out, removing pixels where the value is constant and therefor not adding any meaningful data.
+
+```{r PCA}
+#check dimensions of the full training set 
+dim(training_full)
+
+#remove constants before doing principal components analysis 
+training_full_rmcst <- janitor::remove_constant(training_full)
+
+#check dimensions of the new training set with constants removed. 2nd number should be smaller. 
+dim(training_full_rmcst)
+
+#run principal components analysis 
+#note that for this to run, the factor (label) column has to be ignored, and the constant columns have to have been removed (done in step above)
+prcompresults <- prcomp(training_full_rmcst[,2:623], scale = TRUE)
+
+#create a plot to see how the 1st 2 components split the data
+autoplot(prcompresults, data = training_full_rmcst, color = "label", main = "PCA: Top 2 Components")
+
+#Plot for 2 components still shows groups with significant overlap, some clustering but no obvious separation. 
+#check the cumulative proportion of variance explained by the principal components
+summary(prcompresults)$importance[2:3,seq(0,300,10)]
+
+```
+
+The Principal Components Analysis was able to condense the data, however by just using the first two components alone, only 12% of the variance is explained. Two components is likely not enough to create any effective models for this dataset with 10 different digits to predict. Looking at the cumulative proportion of variance, it does not reach 75% until there are around 70 components, and 95% until there are over 210. While this is still a high dimensional dataset, by removing constant variables and then using principal components analysis, it can be shrunk about 75% from 784 variables to 200 while still explaining nearly 95% of the variation. Next, the values of the principal components will be added back to the labeled dataset, and training and testing data will be created .
+
+```{r PCAData}
+#add the principal components back to the labels
+df_prcomp <- data.frame(training_full$label, prcompresults$x)
+
+#choose the first 200 components, still a lot... explains 95% of the variation
+df_prcomp <- df_prcomp[,1:200]
+
+#name of first column was changed for some reason, need to re-set 
+colnames(df_prcomp)[1] <- 'label'
+
+#split the labeled training data into training and testing (don't want to use the provided testing data because it's unlabeled)
+set.seed(92)
+df_prcomp_training <- sample_frac(df_prcomp, .7)
+suppressMessages(df_prcomp_testing <- anti_join(df_prcomp, df_prcomp_training))
+```
+
+### Create Confusion Matrix Function
+
+In the analysis that follows, several steps will be repeated multiple times, particularly the creation of confusion matrices to assess the accuracy of each model. Those steps are defined here as a function, so that later the code can be simplified to one line.
+
+```{r CMHMFunction}
+#Function to create a heatmap for the confusion matrix 
+cmheatmap <- function(cmtitle, cm) {
+  ggplot(cm$table, aes(Prediction,Reference, fill= Freq)) +
+        geom_tile() + geom_text(aes(label=Freq)) +
+        scale_fill_viridis(option = "D", direction = -1) +
+        labs(x = "Prediction",y = "Reference") +
+        scale_x_discrete(labels=seq(0,9)) +
+        scale_y_discrete(labels=seq(0,9)) + 
+        labs(title = paste(cmtitle, ": Testing Data Confusion Matrix"), 
+             subtitle = paste("Accuracy:", round(cm$overall[1], digits = 2)))
+}
+```
+
+## Models
+
+All of the models included in this study are examples of Supervised Learning for a classification task. This means that a set of labeled data was used to train each model how to classify which digit is appearing in each sample. Each model has it's own unique way of being tuned to improve performance. Once peak performance has been achieved for the model, it can be used on testing data. In this case, the testing data is labeled data that had been parsed out before analysis began, so that it was not included when the model was trained. This is new data that the model has not seen yet, but formatted in the same way as the data it was trained on. Each model will be assessed to see how accurate it is as classifying digits in the testing sample.
+
+### Decision Tree
+
+A Decision Tree is a machine learning algorithm which can be used for classification tasks. It takes labeled data, and then progressively splits the data based on certain decision points. In this dataset for example, a Decision Tree would consider the labels on all 980 observations of 784 pixels and say (greatly simplified) that if Pixel #400 has a value of over 100, then the digit is likely a #1. If that value is below 100, then you need to next look at Pixel #80. If Pixel #80 is over 200, then the digit is likely a #7 and so on and so forth, until all digits are identified. This creates a visual tree-like structure with internal nodes (decision points), branches (rules), and leaf nodes (final result/ classification). A Decision Tree is a popular machine learning algorithm because it is very easily interpreted by the human mind, as it shows a step by step process for determining how to classify the outcome.
+
+```{r DecisionTree}
+#create the decision tree
+dt_model <- rpart::rpart(label~., 
+                      data = df_training, 
+                      method = "class")
+
+#view the decision tree (using the base plot() function)
+plot(dt_model)
+text(dt_model, cex = 0.7)
+
+#view the decision tree (trying another different versions)
+rattle::fancyRpartPlot(dt_model, cex = 0.5) 
+
+#create a prediction based on the training data 
+dt_training_predictions <- predict(dt_model, df_training, type = "class")
+
+#check how well the prediction did on the training data using a confusion matrix 
+dt_training_cnfsmtrx <- confusionMatrix(df_training$label, dt_training_predictions)
+dt_training_cnfsmtrx$overall[1]
+
+#create a prediction on the testing data 
+dt_testing_predictions <- predict(dt_model, df_testing, type = "class")
+
+#check how well the prediction did using a confusion matrix 
+dt_testing_cnfsmtrx <- confusionMatrix(df_testing$label, dt_testing_predictions)
+
+#visualize the confusion matrix on the testing data
+cmheatmap("Decision Tree", dt_testing_cnfsmtrx)
+```
+
+The decision tree developed above shows that pixel number 409 is the root node, meaning the first pixel that must be considered when moving down the decision tree. If that pixel is below 0.5 (which it is 32% of the time), then it has about a 26% chance of being a 0, and a 30% chance of being a 1. If the pixel is above 0.5, which is it 68% of the time, then it has about a 14% chance of being a 4.
+
+Now that a basic decision tree has been made and the accuracy is only 68% on testing data, the tree might perform better if it were pruned. To start with, the Complexity Parameter will be plotted. According to the documentation for the rpart package, a when reviewing the Complexity Parameter plot, "A good choice of cp for pruning is often the leftmost value for which the mean lies below the horizontal line." In this case, a good value of cp to try would be 0.01. <https://www.rdocumentation.org/packages/rpart/versions/4.1.23/topics/plotcp>
+
+```{r DTPruned}
+#plot the complexity parameter
+rpart::plotcp(dt_model)
+
+#prune the model based on the complexity parameter
+dt_model_pruned <- rpart::prune(dt_model, cp = 0.01)
+
+#create a prediction based on the training data 
+dtp_training_predictions <- predict(dt_model_pruned, df_training, type = "class")
+
+#check how well the prediction did using a confusion matrix 
+dtp_training_cnfsmtrx <- confusionMatrix(df_training$label, dtp_training_predictions)
+dtp_training_cnfsmtrx$overall[1]
+
+#create a prediction on the testing data 
+dtp_testing_predictions <- predict(dt_model_pruned, df_testing, type = "class")
+
+#check how well the prediction did on testing data using a confusion matrix 
+dtp_testing_cnfsmtrx <- confusionMatrix(df_testing$label, dtp_testing_predictions)
+
+#visualize the confusion matrix on the testing data
+cmheatmap("Decision Tree Pruned", dtp_testing_cnfsmtrx)
+```
+
+Even when tuning parameters and pruning the decision tree, the accuracy remained unchanged, suggesting that the original model using default parameters was already performing the best that it could.
+
+### Naive Bayes
+
+Naive Bayes is another supervised machine learning algorithm that can solve classification problems. This model works by assuming that all features in the model are independent of each other, meaning in this case that the shading of one pixel is not impacted by the shading of any other pixel. The algorithm them computes probability to identify what class (or digit) a sample belongs to, using the mean and standard deviation for each pixel by digit, and comparing that to the "apriori" which is the number of observations of each digit.
+
+```{r NaiveBayesFull}
+#create the basic naive bayes model
+nb_model <- e1071::naiveBayes(label~.,
+                       data = df_training,
+                       na.action = "na.omit")
+
+#review the apriori, which shows the number of observations within each class
+nb_model$apriori
+
+#review the output table for an individual pixel 
+#first column is mean value of that pixel for that class
+#second column is the standard deviation for that pixel for that class. 
+#below is the table for a pixel near the center, which will most likely be low for the digit 0, and high for the digit 1. 
+nb_model$tables$pixel378
+
+#create a prediction based on the training data 
+nb_training_predictions <- predict(nb_model, df_training, type = "class")
+
+#check how well the prediction did using a confusion matrix 
+nb_training_cnfsmtrx <- confusionMatrix(df_training$label, nb_training_predictions)
+nb_training_cnfsmtrx$overall[1]
+
+#create a prediction on the testing data 
+nb_testing_predictions <- predict(nb_model, df_testing, type = "class")
+
+#check how well the prediction did using a confusion matrix 
+nb_testing_cnfsmtrx <- confusionMatrix(df_testing$label, nb_testing_predictions)
+
+#visualize the confusion matrix on the testing data
+cmheatmap("Naive Bayes", nb_testing_cnfsmtrx)
+```
+
+Naive Bayes performed poorly, only correctly identifying around half of the digits in the testing dataset. This may be because Naive Bayes does not do well with high dimensional data. In a previous section, the dimensionality of the data was reduced using Principal Components Analysis. That reduced dimensionality dataset will be used with Naives Bayes to see if it performs better.
+
+```{r NaiveBayesPCA}
+#this model below actually ran, and was much faster. Did not use the tuning grid? 
+nb_PCA_model <- e1071::naiveBayes(label~., 
+                       data = df_prcomp_training, 
+                       na.action = "na.omit")
+
+#create a prediction based on the training data 
+nb_PCA_training_predictions <- predict(nb_PCA_model, df_prcomp_training, type = "class")
+
+#check how well the prediction did using a confusion matrix 
+nb_PCA_training_cnfsmtrx <- confusionMatrix(df_prcomp_training$label, nb_PCA_training_predictions)
+nb_PCA_training_cnfsmtrx$overall[1]
+
+#create a prediction on the testing data 
+nb_PCA_testing_predictions <- predict(nb_PCA_model, df_prcomp_testing, type = "class")
+
+#check how well the prediction did using a confusion matrix 
+nb_PCA_testing_cnfsmtrx <- confusionMatrix(df_prcomp_testing$label, nb_PCA_testing_predictions)
+
+#visualize the confusion matrix on the testing data
+cmheatmap("Naive Bayes PCA", nb_PCA_testing_cnfsmtrx)
+```
+
+Using a reduced dimensionality dataset did improve the outcome. To see if it can be improved further, Laplace smoothing will be attempted. The default value is 0, so 1 will be attempted.
+
+```{r NBPCAL}
+#this model below actually ran, and was much faster. Did not use the tuning grid? 
+nb_PCAL_model <- e1071::naiveBayes(label~., 
+                       data = df_prcomp_training, 
+                       na.action = "na.omit", 
+                       laplace = 1)
+
+#create a prediction based on the training data 
+nb_PCAL_training_predictions <- predict(nb_PCAL_model, df_prcomp_training, type = "class")
+
+#create a confusion matrix on the training data and check it's accuracy
+nb_PCAL_training_cnfsmtrx <- confusionMatrix(df_prcomp_training$label, nb_PCAL_training_predictions)
+nb_PCAL_training_cnfsmtrx$overall[1]
+
+#create a prediction on the testing data 
+nb_PCAL_testing_predictions <- predict(nb_PCAL_model, df_prcomp_testing, type = "class")
+
+#check how well the prediction did on testing data using a confusion matrix 
+nb_PCAL_testing_cnfsmtrx <- confusionMatrix(df_prcomp_testing$label, nb_PCAL_testing_predictions)
+
+#visualize the confusion matrix on the testing data
+cmheatmap("Naive Bayes PCA & LaPlace Smoothing", nb_PCAL_testing_cnfsmtrx)
+```
+
+Changing the laplace smoothing value did not improve the model.
+
+### Support Vector Machine
+
+A third supervised machine learning algorithm that is useful for classification tasks is the Support Vector Machine. In this algorithm, the labeled training data is sliced so that the samples from any particular class are separated from each other. The observations that are closest to that line are assessed when any new data is introduced and predictions need to be made. While this model is typically used for binary classes, it can also be used for multi-class problems such as the one in this study, where there are 10 different digits being identified.
+
+Support Vector Machines require several parameters to be tuned. After testing out a variety of configurations, the parameter that made the most difference was the kernel. This particular dataset responds well to the polynomial kernel.
+
+```{r SVM}
+#create the svm model 
+suppressWarnings(svm_model <- e1071::svm(label~., data = df_training, 
+                 method = "C-classification", 
+                 kernel = "polynomial",
+                 degree = 2, 
+                 coef0 = 0,
+                 gamma = 1, 
+                 cost = 10))
+
+#view the details of it
+summary(svm_model)
+
+#create predictions on training data 
+svm_training_predictions <- predict(svm_model, df_training, type = "class")
+
+#use a confusion matrix to assess accuracy on the training data
+svm_training_cnfsmtrx <- confusionMatrix(df_training$label, svm_training_predictions)
+svm_training_cnfsmtrx$overall[1]
+
+#create predictions on testing data 
+svm_testing_predictions <- predict(svm_model, df_testing, type = "class")
+
+#use a confusion matrix to assess
+svm_testing_cnfsmtrx <- confusionMatrix(df_testing$label, svm_testing_predictions)
+
+#visualize the confusion matrix on the testing data
+cmheatmap("Support Vector Machine", svm_testing_cnfsmtrx)
+```
+
+Although the result was already very strong, some additional tuning will be attempted by using the tune.svm() function from the e1071 package to identify the tuning parameters this package identifies as best. This function only works if the data has no variables that are constant across all samples, so the data from the Principal Components Analysis will be used again here.
+
+```{r SVMTuned}
+#Trying with the PCA data, no constants. Takes a while to run  
+obj <- e1071::tune.svm(label~., data = df_prcomp_training, gamma = 2^(-1:1), cost = 2^(2:4))
+obj$best.model #tells me to use c-classification, radial, cost = 4 
+
+
+svmT_model <- e1071::svm(label~., data = df_prcomp_training, 
+                 method = "C-classification", 
+                 kernel = "radial",
+                 cost = 4)
+
+#create a prediction based on the training data 
+svmT_training_predictions <- predict(svmT_model, df_prcomp_training, type = "class")
+
+#check how well the prediction did using a confusion matrix 
+svmT_training_cnfsmtrx <- confusionMatrix(df_prcomp_training$label, svmT_training_predictions)
+svmT_training_cnfsmtrx$overall[1]
+
+#create a prediction on the testing data 
+svmT_testing_predictions <- predict(svmT_model, df_prcomp_testing, type = "class")
+
+#check how well the prediction did using a confusion matrix 
+svmT_testing_cnfsmtrx <- confusionMatrix(df_prcomp_testing$label, svmT_testing_predictions)
+
+#visualize the confusion matrix on the testing data
+cmheatmap("Support Vector Machine PCA", svmT_testing_cnfsmtrx)
+```
+
+Using the data from the Principal Components Analysis, and feeding it into the tune.svm function of e1071 did not improve the model, in fact it made it perform slightly worse on the testing data.
+
+### k Nearest Neighbor
+
+K nearest neighbor is another supervised machine learning model that works well with classification problems. This model is considered "instance based learning" or "lazy learning" because it does not actually develop a model. Instead, when given a testing data set, it scans the training dataset to find the "nearest neighbors" (the observations that are most similar to to testing data), and then takes the classification that is most common amongst those neighbors. The main parameter to tune here is the value for K, which is the number of observations that are counted as neighbors. For sparse datasets like the one being used here, a smaller K is useful.
+
+```{r KNN}
+#create knn predictions for the training set first 
+knn_model_train <- class::knn(train = df_training, 
+                      test = df_training, 
+                      cl = df_training$label, 
+                      k = 5)
+
+#use a confusion matrix to assess accuracy 
+knn_training_cnfsmtrx <- confusionMatrix(df_training$label, knn_model_train)
+knn_training_cnfsmtrx$overall[1]
+
+
+#create predictions for the testing set
+knn_model_test <- class::knn(train = df_training, 
+                      test = df_testing, 
+                      cl = df_training$label, 
+                      k = 5)
+
+#use a confusion matrix to assess accuracy on testing set
+knn_testing_cnfsmtrx <- confusionMatrix(df_testing$label, knn_model_test)
+
+#visualize the confusion matrix on the testing data
+cmheatmap("K Nearest Neighbor Testing", knn_testing_cnfsmtrx)
+
+```
+
+Now that the basic knn model has been developed, some fine tuning will be attempted using cross validation. The original model performed well. By using the train() function from the caret package, repeated cross-validation can be used and a series of k values can be tested to find and then test the best possible model.
+
+```{r KNNTune}
+
+#define the training controls 
+statctrl <- caret::trainControl(
+  method = "repeatedcv",  # Repeated cross-validation
+  number = 5,            # Number of folds
+  repeats = 3             # Number of complete sets of folds
+) 
+
+# create knn model (runs slow)
+knn_model_tuned <- caret::train(
+  label~., 
+  data = df_training, 
+  method = "knn", 
+  trControl = statctrl,
+  tuneLength = 10,     
+  na.action = "na.omit"
+)
+
+#plot the tuned model to see accuracy against number of neighbors tested
+plot(knn_model_tuned) #best number of neighbors was 5
+
+#create predictions on the training data
+knnT_training_predictions <- predict(knn_model_tuned, df_training)
+
+#use a confusion matrix to assess accuracy on training data
+knnT_training_cnfsmtrx <- confusionMatrix(df_training$label, knnT_training_predictions)
+knnT_training_cnfsmtrx$overall[1]
+
+#create predictions on the testing data
+knnT_testing_predictions <- predict(knn_model_tuned, df_testing)
+
+#use a confusion matrix to assess
+knnT_testing_cnfsmtrx <- confusionMatrix(df_testing$label, knnT_testing_predictions)
+
+#visualize the confusion matrix on the testing data
+cmheatmap("K Nearest Neighbor Tuned", knnT_testing_cnfsmtrx)
+
+
+```
+
+### Random Forest
+
+The final model to be assessed is Random Forest. Random Forest is considered an ensemble method, because it creates a series of decision trees and aggregates their predictions to find the best prediction. The Decision Tree algorithm performed well already, so Random Forest may improve even further upon that.
+
+```{r RandomForest}
+
+#create the model
+rf_model <- randomForest::randomForest(label~., data = df_training)
+
+#create predictions from the training data
+rf_training_predictions <- predict(rf_model, df_training)
+
+#use a confusion matrix to assess accuracy on training data
+rf_training_cnfsmtrx <- confusionMatrix(df_training$label, rf_training_predictions)
+rf_training_cnfsmtrx$overall[1]
+
+#create predictions on the testing data
+rf_testing_predictions <- predict(rf_model, df_testing)
+
+#use a confusion matrix to assess 
+rf_testing_cnfsmtrx <- confusionMatrix(df_testing$label, rf_testing_predictions)
+
+#visualize the confusion matrix on the testing data
+cmheatmap("Random Forest", rf_testing_cnfsmtrx)
+```
+
+The Random Forest model, using default parameters has performed the best out of any model so far. Attempts can still be made at further tuning for a better result. The two parameters that can be tuned are ntree, which identifies the number of decision trees to include, and mtry which is the number of variables sampled as candidates for each split. The default is to create 500 trees, with an mtry of 7.
+
+<https://machinelearningmastery.com/tune-machine-learning-algorithms-in-r/>
+
+```{r RFTuning}
+#use a tuning model to identify the best mtry to attempt
+#commenting out because the code will not knit for some reason. Output in text below. 
+#randomForest::tuneRF(df_training, df_training$label, improve = 0.05, plot = TRUE)
+```
+
+| mtry | OOBError    |
+|------|-------------|
+| 14   | 0.148979592 |
+| 28   | 0.118367347 |
+| 56   | 0.091836735 |
+| 112  | 0.050000000 |
+| 224  | 0.019387755 |
+| 448  | 0.002040816 |
+| 785  | 0.000000000 |
+
+![](images/paste-4178EF15.png)
+
+The function above indicates that the best mtry to use would be 785. However, an error message appears if that number is used, because the value for mtry cannot be above the number of predictor variables in the dataset, which in this case is 784. Instead, the number recommended just before that, 448, will be used instead.
+
+```{r RFTuned}
+#create the model using the recommended number of trees
+rfT_model <- randomForest::randomForest(label~., data = df_training, mtry = 448)
+
+#create predictions from the training data
+rfT_training_predictions <- predict(rfT_model, df_training)
+
+#use a confusion matrix to assess accuracy on training data
+rfT_training_cnfsmtrx <- confusionMatrix(df_training$label, rfT_training_predictions)
+rfT_training_cnfsmtrx$overall[1]
+
+#create predictions on the testing data
+rfT_testing_predictions <- predict(rfT_model, df_testing)
+
+#use a confusion matrix to assess 
+rfT_testing_cnfsmtrx <- confusionMatrix(df_testing$label, rfT_testing_predictions)
+
+#visualize the confusion matrix on the testing data
+cmheatmap("Random Forest", rfT_testing_cnfsmtrx)
+```
+
+Interestingly enough, once again tuning the model made it perform worse.
+
+# Results
+
+In this study, five different models were used to attempt to identify and correctly label a sample of handwritten digits from 0-9. Each model was first run using default parameters, and then tuned to see if the accuracy could be improved. In most cases, the default parameters outperformed the tuned models. This may be due to the fact that the coding behind each model in R is advanced enough that it assesses the model while it is being built to use the parameters that increase it's accuracy the most. The models were developed as follows, and accuracy results for each are tabulated below:
+
+-   Decision Tree using the rpart package and standard parameters.
+-   Decision Tree pruned using the Complexity Parameter.
+-   Naive Bayes using the standard parameters of the e1071 package.
+-   Naive Bayes using the dataset developed with Principal Components Analysis.
+-   Naive Bayes using the dataset developed with Principal Components Analysis, and LaPlace smoothing
+-   Support Vector Machine using the e1071 package and trial and error to determine the parameters (polynomial kernel and cost of 10).
+-   Support Vector Machine tuned using the e1071 package's tune.svm() function, which indicated the radial kernel and a cost of 4 would be most ideal.
+-   K Nearest Neighbor using the class package's knn model, with k=5.
+-   K Nearest Neighbor Tuned using the caret package, with 3 repeats of 5-fold cross-validation, and 10 different k figures tested.
+-   Random Forest using the default parameters of the randomForest package.
+-   Random Forest Tuned using the randomForest package's tuneRF function to determine the best value for mtry.
+
+The table below shows the accuracy results of the confusion matrices for each model, including the default version and all tuned models that were developed as well.
+
+```{r ResultsTable}
+#Gather accuracy results for all of the final training models for each algorithm
+rtTrainingResults <- c(dt_training_cnfsmtrx$overall[1], 
+		     dtp_training_cnfsmtrx$overall[1], 
+         nb_training_cnfsmtrx$overall[1], 
+		     nb_PCAL_training_cnfsmtrx$overall[1], 
+         svm_training_cnfsmtrx$overall[1], 
+		     svmT_training_cnfsmtrx$overall[1],
+         knn_training_cnfsmtrx$overall[1], 
+		     knnT_training_cnfsmtrx$overall[1], 
+         rf_training_cnfsmtrx$overall[1], 
+		     rfT_training_cnfsmtrx$overall[1])
+
+#Gather accuracy results for all of the final testing models for each algorithm
+rtTestingResults <- c(dt_testing_cnfsmtrx$overall[1], 
+		     dtp_testing_cnfsmtrx$overall[1], 			
+         nb_testing_cnfsmtrx$overall[1],
+		     nb_PCAL_testing_cnfsmtrx$overall[1],
+         svm_testing_cnfsmtrx$overall[1], 
+		     svmT_testing_cnfsmtrx$overall[1],
+         knn_testing_cnfsmtrx$overall[1], 
+         knnT_testing_cnfsmtrx$overall[1], 
+         rf_testing_cnfsmtrx$overall[1], 
+		     rfT_testing_cnfsmtrx$overall[1]) 
+
+#Create a vector with each model's name
+rtCategories <- c("Decision Tree", "Decision Tree: Pruned",
+			"Naive Bayes", "Naive Bayes: PCA, LaPlace",
+			"Support Vector Machine", "SVM: PCA, Tuned", 
+			"K Nearest Neighbor", "KNN: Tuned",
+			"Random Forest", "RF: Tuned")
+
+#create a table showing training and testing results for the models
+rtResultTable <- data.frame(rtCategories, rtTrainingResults, rtTestingResults)
+names(rtResultTable) <- c("Model Results", "Training Accuracy", "Testing Accuracy")
+rtResultTable <- mutate_if(rtResultTable, is.numeric, round, digits =2)
+rtResultTable
+```
+
+As can be observed above, Random Forest performed the best out of all the models tried, and while using the default parameters. This may be because this model creates hundreds of decision trees, and then takes the aggregate recommendation of all those trees. This is a very robust model that worked well in this situation. Support vector machines and K Nearest Neighbor also performed very well, again using the default parameters. The worst performer was Naive Bayes, which typically does struggle with high dimensional, sparse data. Even when using the data that had been reconfigured using Principal Components Analysis and LaPlace smoothing, it still could not predict much more than 60% of the digits.
+
+# Conclusions
+
+Machine Learning has revolutionized the way that mundane tasks can be automated. For example, in the past, extensive programming was required to create human-designed algorithms for identifying characters using Optical Character Recognition (OCR). Each feature of each letter or number had to be reviewed and encoded so that OCR algorithms could identify characters. Now, with advanced machine learning techniques, massive datasets can be analyzed and algorithms developed within minutes that have a high level of accuracy classifying unknown data.
+
+In this study, a large dataset of handwritten digits was analyzed using five different machine learning algorithms to identify the strongest method of accurately predicting unknown digit samples. The models varied in accuracy, from a low close to 50% and a high of above 90%. The very best model was the Random Forest model, which uses an ensemble of decision trees. Close behind were support vector machines which look for the observations closest to an invisible border that separate the classes (digits), and K-Nearest Neighbor which looks at the labels on the observations that are closest to each unknown sample. Each operates in a slightly different way, but proved very effective with this high dimensional, sparse matrix data set.
+
+These findings are useful and could be expanded into many different use cases. Beyond identifying 10 numeric digits, these types of algorithms could also be used for the entire alphabet, and even for other written languages such as Chinese characters. Each time that these models are used with a different dataset, the findings will vary, and the model that performs best in this case may perform poorly when faced with a different task. It is important to master the skill of using these models, and tuning these models, so that they can be applied to whatever classification problem one may be facing.
+
+```{r Runtime}
+end_time <- Sys.time() #adding this just to track how long this takes
+paste("This took",round(end_time - start_time, digits = 2), "minutes to run")
+```
