@@ -23,3 +23,5 @@ Then I saved it. Did it update?
 At 5:46, i opened this rmd file from the actual windows folder, wrote this sentence and saved it. 
 
 At 5:51, I did 'edit in place" in the actual Github website, there's a button at the top to commit changes. 
+
+At 5:57, adding this in R studio. I had to allow the commit in the desktop version. 
