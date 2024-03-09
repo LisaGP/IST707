@@ -13,4 +13,9 @@ print("Hello World")
 2*7
 ```
 
+<<<<<<< Updated upstream
 Trying again, does it save?
+=======
+Within the desktop, I just right clicked and said open in R studio. It did open, in Project: (None). 
+Then I saved it. Did it update?
+>>>>>>> Stashed changes
